@@ -1,0 +1,2 @@
+#!/bin/sh
+perl TrackNamer "/home/timo/Musik/Radio" --archive-dir "/home/timo/Musik/Server/good" --use-tags --write-srcdir2tag

@@ -1,0 +1,2 @@
+#!/bin/sh
+perl TrackNamer "/misc/grhnet/musik/wischer/Radio" --archive-dir "/home/timo/Musik/Backup" --use-tags --dest-dir "/home/timo/Musik/Radio" --write-srcdir2tag

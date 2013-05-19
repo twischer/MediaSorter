@@ -1,0 +1,629 @@
+#!/usr/bin/perl -w
+use strict;
+use warnings;
+use utf8;
+use Pod::Usage();
+use File::Basename();
+use Getopt::Long();
+use MP3::Tag();
+use MP3::Info();
+
+chdir(  File::Basename::dirname( $0 )  );
+require MediaSorter;
+require TrackNamer;
+
+my $MIN_THRESHOLD = 8;
+my $MAX_THRESHOLD = 25;
+
+
+my $USER_SONG_ACTION_FILE = "usersongaction.dat";
+
+my $fTesting = 0;
+my $fRemoveExistingFiles = 0;
+my $fUseTags = 0;
+my $fDebug = 0;
+my $fShowHelp = 0;
+my $fWriteSrcDirToTag = 0;
+my $fRenameByUser = 0;
+my $m_szArchiveDirectory = "";
+my $m_szDestDirectory = "";
+my @aszUserAskingFiles = ();
+
+Getopt::Long::GetOptions(
+	'test'						=> \$fTesting,
+	'rm-files'					=> \$fRemoveExistingFiles,
+	'use-tags'					=> \$fUseTags,
+	'debug'						=> \$fDebug,
+	'h'							=> \$fShowHelp,
+	'help'						=> \$fShowHelp,
+	'write-srcdir2tag'			=> \$fWriteSrcDirToTag,
+	'archive-dir=s'				=> \$m_szArchiveDirectory,
+	'dest-dir=s'				=> \$m_szDestDirectory,
+	'rename-by-user'			=> \$fRenameByUser,
+);
+
+my $m_szSrcDirectory = $ARGV[0];
+
+if ( (not defined $m_szSrcDirectory) or ($m_szSrcDirectory eq "") )
+{
+	warn "FATAL: Es wurde kein Quellverzeichnis angegeben\r\n";
+	$fShowHelp = 1;
+}
+if ( not -d $m_szSrcDirectory )
+{
+	warn "FATAL: Das Quellverzeichnis '$m_szSrcDirectory' existiert nicht\r\n";
+	$fShowHelp = 1;
+}
+if ( $fShowHelp )
+{
+	Pod::Usage::pod2usage( 1 );
+}
+
+my %m_mpszUserSongAction = MediaSorter::HistoryLoad( $USER_SONG_ACTION_FILE );
+	
+MediaSorter::Print("Läd Verzeichnis '$m_szSrcDirectory' ");
+my @m_aszFiles = MediaSorter::FindFiles( $m_szSrcDirectory, 1, 1 );
+MediaSorter::Println();
+
+my @aszArchiveFiles = ();
+if ( (defined $m_szArchiveDirectory) and ($m_szArchiveDirectory ne "") )
+{
+	die "Verzeichnis '$m_szArchiveDirectory' nicht gefunden!" unless (-d $m_szArchiveDirectory);
+
+	MediaSorter::Print("Läd Verzeichnis '$m_szArchiveDirectory' ");
+	@aszArchiveFiles = MediaSorter::FindFiles( $m_szArchiveDirectory, 1 );
+}
+
+MediaSorter::Println("\n");
+
+my $szDestDirectory = $m_szDestDirectory;
+while ( my $paszFile = shift @m_aszFiles )
+{
+	my ($szFile, $szBasename) = @$paszFile;
+	
+	next unless ( -f $szFile );
+	MediaSorter::Print("$szBasename ... ") if ($fDebug == 1);
+	
+	my $szSrcDirectory = File::Basename::dirname( $szFile );
+	if ( (not defined $m_szDestDirectory) or ($m_szDestDirectory eq "") )
+	{
+		$szDestDirectory = $szSrcDirectory;
+	}
+	
+	my $szID3Tag = "";
+	my $szNewFilename = "";
+	my $szInfoText = "";
+    my ($nLength, $nBitrate) = GetLengthAndBitrateOfSong( $szFile );
+    if ( (-s $szFile) < 1000000 or ($nBitrate < 128 and $nBitrate > 0) )	# File smaller than 1 MB or bitrate less than 128kbit/s
+	{
+		$szInfoText = "Datei gelöscht (kleiner als 1 MB oder weniger als 128kBit/s)";
+		unlink $szFile unless ( $fTesting );
+	}
+	else
+	{
+		my $fUserShouldRename = 0;
+		
+		# read id3tags and generate a file name
+		if ($fUseTags)
+		{
+			$szID3Tag = GetID3Tag( $szFile );
+			$szNewFilename = $szID3Tag;
+			
+			if ($szID3Tag =~ m/\?/)
+			{
+				# möglicherweise ein Kodierungsproblem des id3 tags
+				$fUserShouldRename = 1;
+			}
+		}
+		
+		if ( (not defined $szNewFilename) or ($szNewFilename eq "") )
+		{
+			$szNewFilename = $szBasename;
+		}
+		
+		($szNewFilename, my $fFilenameHasChangeByUser) = TrackNamer::GetNewTrackName( $szNewFilename, $fDebug );
+		if ($fFilenameHasChangeByUser == 1 or $szNewFilename =~ m/\*/)
+		{
+			$fUserShouldRename = 1;
+		}
+		
+		
+		die "FATAL: Neuer Dateiname ist leer. Alt='$szBasename' Neu='$szNewFilename'\n" if ($szNewFilename eq "");
+		
+		
+		if (  ($fRenameByUser == 1) and ($fUserShouldRename == 1)  )
+		{
+			push @aszUserAskingFiles, [ "RENAME", $szFile, $szDestDirectory, $szBasename, $szID3Tag, $szNewFilename ];
+			$szInfoText = "Datei wird am Ende vom Benutzer umbenannt";
+		}
+		else
+		{
+			($szInfoText, my @aszUserActionData) = CalcMinRelDiffToArchiveSongs( $szFile, $szDestDirectory, $szNewFilename, $MIN_THRESHOLD, $MAX_THRESHOLD );
+			if (@aszUserActionData > 0)
+			{
+				push @aszUserAskingFiles, [ "CHECK_EXISTING", @aszUserActionData ];
+			}
+		}
+	}
+	
+	MediaSorter::Print("Done.\r\n") if ($fDebug == 1);
+	
+	if ($szInfoText ne "")
+	{
+		MediaSorter::Println("Alt: '$szBasename'");
+		MediaSorter::Println("Tag: '$szID3Tag'") if ($szID3Tag ne "");
+		MediaSorter::Println("Neu: '$szNewFilename'");
+		MediaSorter::Println("Info: $szInfoText");
+		MediaSorter::Println();
+		MediaSorter::Println();
+	}
+}
+
+AskUserForSongAction();
+
+MediaSorter::Print("Fertig.\r\n\r\n");
+exit(0);
+
+
+sub GetID3Tag
+{
+	my ($szFile) = @_;
+	
+	warn "DEBUG: Read ID3 tag from '$szFile'.\r\n" if ($fDebug == 1);
+	
+	my $szID3Tag = "";
+	my $pobjID3 = MP3::Tag->new( $szFile );
+	$pobjID3->get_tags();
+	
+	foreach my $szID ("ID3v2", "ID3v1")
+	{
+		if ( exists $pobjID3->{$szID} )
+		{
+			my $szTitle = $pobjID3->{$szID}->title();
+			my $szArtist = $pobjID3->{$szID}->artist();
+			if ( (defined $szTitle) and ($szTitle ne "") and (defined $szArtist) and ($szArtist ne "") )
+			{
+				$szID3Tag = "$szArtist - $szTitle";
+				
+				utf8::decode( $szID3Tag );
+				last;
+			}
+		}
+	}
+	
+	return $szID3Tag;
+}
+
+sub CalcMinRelDiffToArchiveSongs
+{
+	my ($szFile, $szDestDirectory, $szBasename, $nMinThreshold, $nMaxThreshold) = @_;
+	
+	my $szInfoText = "";
+	my $szLCBasename = lc( $szBasename );
+	
+	
+	my @aszUserActionData = ();
+	
+	my ($szMinDiffFile, $szMinDiffBasename, $nMinRelDiff) = GetSongWithBestMatch( $szLCBasename, $nMinThreshold );
+	if ($nMinRelDiff < $nMinThreshold)
+	{
+		# nach Länge der Songs nur entscheiden wenn sie noch nicht im Archiv liegen
+		my ($nLength, $nBitrate) = GetLengthAndBitrateOfSong( $szFile );
+        my ($nMinDiffLength, $nMinDiffBitrate) = GetLengthAndBitrateOfSong( $szMinDiffFile );
+		if (    ($szMinDiffFile =~ m/$m_szSrcDirectory/) and ($nLength > $nMinDiffLength)    )
+		{
+			$szInfoText = DoExistingSong(  $szMinDiffFile, $m_szSrcDirectory, MediaSorter::GetBasename( $szMinDiffFile )  ) . ", auf Archiv-Song angewendet";
+		}
+		else
+		{
+			$szInfoText = DoExistingSong( $szFile, $m_szSrcDirectory, $szBasename );
+		}
+	}
+	elsif ($nMinRelDiff > $nMaxThreshold)
+	{
+		$szInfoText = DoNewSong( $szFile, $szDestDirectory, $szBasename );
+	}
+	else
+	{
+		my $szSongAction = GetUserSongActionFromFile( $szBasename, $szMinDiffBasename );
+		if ($szSongAction eq "n")
+		{
+			$szInfoText = DoNewSong( $szFile, $szDestDirectory, $szBasename );
+		}
+		elsif ($szSongAction eq "e")
+		{
+			$szInfoText = DoExistingSong( $szFile, $m_szSrcDirectory, $szBasename );
+		}
+		else
+		{
+			@aszUserActionData = ( $szFile, $szDestDirectory, $szBasename, $nMinRelDiff, $szMinDiffFile, $szMinDiffBasename );
+			$szInfoText = "Benutzer wird am Ende gefragt";
+		}
+	}
+	
+	if ($szInfoText ne "")
+	{
+		$szInfoText .= sprintf(" (Archiv: %s, Relativer Unterschied: %0.2f %%)", $szMinDiffBasename, $nMinRelDiff);
+	}
+	
+	return ($szInfoText, @aszUserActionData);
+}
+
+sub GetSongWithBestMatch
+{
+	my ($szBasename, $nMinThreshold) = @_;
+	
+	
+	my $nBasenameLength = length( $szBasename );
+	
+	my ($szInterpret, $szTitle) = split( " - ", $szBasename );
+	
+	my $nInterpretLength = 0;
+	my $nTitleLength = 0;
+	if ( (defined $szTitle) and ($szTitle ne "") )
+	{
+		$nInterpretLength = length( $szInterpret );
+		$nTitleLength = length( $szTitle );
+	}
+	
+	my $nMinDiff = 100;
+	my $szMinDiffFile = "";
+	my $szMinDiffBasename = "";
+	foreach my $paszArchiveSong (@m_aszFiles, @aszArchiveFiles)
+	{
+		my $szArchiveFile = $paszArchiveSong->[0];
+		my $szArchiveBasename = $paszArchiveSong->[1];
+		
+		my ($szArchiveInterpret, $szArchiveTitle) = split( " - ", $szArchiveBasename );
+		
+		my $nDiff = 100;
+		if ( ($nTitleLength > 0) and (defined $szArchiveTitle) and ($szArchiveTitle ne "") )
+		{
+			# use 35% of interpret diff
+			$nDiff = MediaSorter::GetDiffOfStrings( $szInterpret, $nInterpretLength, $szArchiveInterpret, 35 );
+			# use 65% of title diff
+			$nDiff += MediaSorter::GetDiffOfStrings( $szTitle, $nTitleLength, $szArchiveTitle, 65 );
+		}
+		else
+		{
+			$nDiff = MediaSorter::GetDiffOfStrings( $szBasename, $nBasenameLength, $szArchiveBasename, 100 );
+		}
+		
+		
+		if ($nMinDiff > $nDiff)
+		{
+			$szMinDiffFile = $szArchiveFile;
+			$szMinDiffBasename = $szArchiveBasename;
+			$nMinDiff = $nDiff;
+		}
+		
+		last if ($nMinDiff <= $nMinThreshold);
+	}
+	
+	return ($szMinDiffFile, $szMinDiffBasename, $nMinDiff);
+}
+
+sub GetLengthAndBitrateOfSong
+{
+	my ($szFile) = @_;
+	
+	my $mpszInfo = MP3::Info::get_mp3info( $szFile );
+	
+    my $nLength = 0;
+	if (defined $mpszInfo->{'SECS'})
+	{
+		$nLength = $mpszInfo->{'SECS'};
+	}
+	
+	my $nBitrate = 0;
+    if (defined $mpszInfo->{'BITRATE'})
+    {
+        $nBitrate = $mpszInfo->{'BITRATE'};
+    }
+    
+    return ($nLength, $nBitrate);
+}
+
+sub DoExistingSong
+{
+	my ($szFile, $szDestDirectory, $szFilename) = @_;
+	
+	my $szInfoText = "";
+	if ($fRemoveExistingFiles)
+	{
+		unlink $szFile unless ( $fTesting );
+		$szInfoText = "Song gelöscht, ist im Archiv schon vorhanden";
+	}
+	else
+	{
+		my $szDestFile = $szDestDirectory . "/Existing/" . $szFilename;
+		MediaSorter::MoveFileAddNumberIfExisting( $szFile, $szDestFile, ".mp3", 1 ) unless ( $fTesting );
+		$szInfoText = "Song verschoben, ist im Archiv schon vorhanden";
+		
+		if ( $fWriteSrcDirToTag and (not $fTesting) )
+		{
+			WriteSrcDirToTag( $m_szSrcDirectory, $szFile, $szDestFile.".mp3" );
+		}
+	}
+	
+	return $szInfoText;
+}
+
+sub DoNewSong
+{
+	my ($szFile, $szDestDirectory, $szNewFilename) = @_;
+	
+	my $szInfoText = "";
+	my $szDestFile = "$szDestDirectory/$szNewFilename.mp3";
+	# Has the destination or the song name changed
+	if ( $szFile ne $szDestFile )
+	{
+		if ( -e $szDestFile )
+		{
+			# Datei löschen
+			unlink $szFile unless ( $fTesting );
+			$szInfoText = "Song gelöscht, ist im Zielverzeichnis schon vorhanden";
+		}
+		else
+		{
+			# Datei umbenennen
+			MediaSorter::MoveFile( $szFile, $szDestFile, 1 ) unless ( $fTesting );
+			$szInfoText = "Song umbenannt/verschoben";
+			
+			if ( $fWriteSrcDirToTag and (not $fTesting) )
+			{
+				WriteSrcDirToTag( $m_szSrcDirectory, $szFile, $szDestFile );
+			}
+		}
+	}
+	
+	return $szInfoText;
+}
+
+sub WriteSrcDirToTag
+{
+	my ($szMainSrcDirectory, $szFile, $szDestFile) = @_;
+	
+	my $szDiffDirs = File::Basename::dirname( $szFile );
+	$szDiffDirs =~ s/$szMainSrcDirectory\///i;
+	
+	my $pobjID3 = MP3::Tag->new( $szDestFile );
+	if (defined $pobjID3)
+	{
+		$pobjID3->config("write_v24" => 'TRUE');
+		$pobjID3->get_tags();
+		unless (exists $pobjID3->{'ID3v2'})
+		{
+			$pobjID3->new_tag("ID3v2");
+		}
+		
+		$pobjID3->{'ID3v2'}->remove_frame( "TENC" );
+		$pobjID3->{'ID3v2'}->add_frame( "TENC", $szDiffDirs );
+		
+		$pobjID3->{'ID3v2'}->write_tag();
+		$pobjID3->close();
+	}
+	else
+	{
+		warn "WARN: Konnte Quellverzeichnis nicht in ID3-Tags speichern. Datei: '$szDestFile'\r\n";
+	}
+}
+
+sub AskUserForSongAction
+{
+	my $nNewMaxThreshold = 0;
+	my $nNewMinThreshold = 100;
+	
+
+	foreach my $paszSongData (@aszUserAskingFiles)
+	{
+		my ($szAction, @aszUserActionData) = @$paszSongData;
+		
+		
+		
+		if ($szAction eq "RENAME")
+		{
+			# Datei soll umbenant werden
+			my ($szFile, $szDestDirectory, $szBasename, $szID3Tag, $szNewFilename) = @aszUserActionData;
+			
+			MediaSorter::Println("Alt: '$szBasename'");
+			MediaSorter::Println("Tag: '$szID3Tag'");
+			MediaSorter::Println("Neu: '$szNewFilename'");
+			
+			$szNewFilename = MediaSorter::ChangeFileName( $szNewFilename );
+			
+			
+			
+			(undef, @aszUserActionData) = CalcMinRelDiffToArchiveSongs( $szFile, $szDestDirectory, $szNewFilename, $MIN_THRESHOLD, $MAX_THRESHOLD );
+			if (@aszUserActionData > 0)
+			{
+				$szAction = "CHECK_EXISTING";
+			}
+		}
+		
+		
+		if ($szAction eq "CHECK_EXISTING")
+		{
+			my ($szFile, $szDestDirectory, $szBasename, $nMinRelDiff, $szMinDiffFile, $szMinDiffBasename) = @aszUserActionData;
+			
+			# cancel if one of the comparing files no langer available
+			# (was moved by other task))
+			next if ( (not -f $szFile) or (not -f $szMinDiffFile) );
+			
+			MediaSorter::Print("1: $szBasename\r\n");
+			MediaSorter::Print("2: $szMinDiffBasename\r\n");
+			MediaSorter::Print("1: $szFile\r\n");
+			MediaSorter::Print("2: $szMinDiffFile\r\n");
+            
+            my ($nLength, $nBitrate) = GetLengthAndBitrateOfSong( $szFile );
+            my ($nMinDiffLength, $nMinDiffBitrate) = GetLengthAndBitrateOfSong( $szMinDiffFile );
+			MediaSorter::Print("1: ".$nLength."\r\n");
+			MediaSorter::Print("2: ".$nMinDiffLength."\r\n");
+			MediaSorter::Print(  "1: ".MediaSorter::GetDateOfFile( $szFile )."\r\n"  );
+			MediaSorter::Print(  "2: ".MediaSorter::GetDateOfFile( $szMinDiffFile )."\r\n"  );
+			MediaSorter::Print("(1..Neuer Song 2..Song im Archiv)\r\n\n");
+			MediaSorter::Print("Relativer Unterschied: $nMinRelDiff %\r\n\n");
+			MediaSorter::Print("Soll der neue Song gelöscht/aussortiert werden? (j/n)\r\n");
+			
+			my $fWorking = 1;
+			my $fWorking2 = 1;
+			while ( $fWorking )
+			{
+				my $szKey = MediaSorter::GetKey();
+				if ( $szKey eq "j" )
+				{
+					MediaSorter::Print("Ja.\r\n\n");
+					
+					MediaSorter::PlayerUnload();
+					DoExistingSong( $szFile, $m_szSrcDirectory, $szBasename );
+					
+					AddUserSongActionToFile( $szBasename, $szMinDiffBasename, "e" );
+					
+					if ($nNewMinThreshold > $nMinRelDiff)
+					{
+						$nNewMinThreshold = $nMinRelDiff;
+					}
+					
+					$fWorking = 0;
+				}
+				elsif ( $szKey eq "n" )
+				{
+					MediaSorter::Print("Nein.\r\n\n");
+					
+					MediaSorter::PlayerUnload();
+					DoNewSong( $szFile, $szDestDirectory, $szBasename );
+					
+					AddUserSongActionToFile( $szBasename, $szMinDiffBasename, "n" );
+					
+					if ($nNewMaxThreshold < $nMinRelDiff)
+					{
+						$nNewMaxThreshold = $nMinRelDiff;
+					}
+					
+					$fWorking = 0;
+				}
+				elsif ($szKey eq ",")
+				{
+					MediaSorter::PlayerRewind();
+				}
+				elsif ($szKey eq ".")
+				{
+					MediaSorter::PlayerForward();
+				}
+				elsif ($szKey eq "1")
+				{
+					MediaSorter::PlayerLoad( $szFile );
+				}
+				elsif ($szKey eq "2")
+				{
+					MediaSorter::PlayerLoad( $szMinDiffFile );
+				}
+				elsif ($szKey eq "o")
+				{
+					MediaSorter::Print("Song aus dem Archiv wird gelöscht/aussortiert.\r\n\n");
+					
+					MediaSorter::PlayerUnload();
+					DoExistingSong( $szMinDiffFile, $m_szSrcDirectory, MediaSorter::GetBasename( $szMinDiffFile ) );
+					
+					$fWorking = 0;
+				}
+				elsif ($szKey eq "q")
+				{
+					$fWorking = 0;
+					$fWorking2 = 0;
+				}
+			}
+			
+			last unless ($fWorking2);
+		}
+	}
+	
+	MediaSorter::Print("NewMinThreshold: $nNewMinThreshold\r\n");
+	MediaSorter::Print("NewMaxThreshold: $nNewMaxThreshold\r\n");
+}
+
+sub AddUserSongActionToFile
+{
+	my ($szBasename1, $szBasename2, $szAction) = @_;
+	
+	my $szKey = lc( $szBasename1 )."|".lc( $szBasename2 );
+	$m_mpszUserSongAction{$szKey} = $szAction;
+	
+	MediaSorter::HistorySave( $USER_SONG_ACTION_FILE, \%m_mpszUserSongAction );
+}
+
+sub GetUserSongActionFromFile
+{
+	my ($szBasename1, $szBasename2) = @_;
+	
+	foreach my $szKey (  lc( $szBasename1 )."|".lc( $szBasename2 ), lc( $szBasename2 )."|".lc( $szBasename1 )  )
+	{
+		if ( exists $m_mpszUserSongAction{$szKey} )
+		{
+			return $m_mpszUserSongAction{$szKey};
+		}
+	}
+	
+	return "";
+}
+
+__END__
+
+=head1 NAME
+
+TrackNamer - Benennt MP3-Songs nach einheitlichen regeln
+
+=head1 SYNOPSIS
+
+TrackNamer [options] [directory]
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<--help>
+
+Print a brief help message and exits.
+
+=item B<--test>
+
+Löscht und benennt die Dateien nicht um, sondern gibt nur die Informationen aus
+
+=item B<--mv-files>
+
+Verschiebt die Songs die im Arbeitsverzeichnis oder im Musikarchiv nach dem Umbenennen den gleichen Namen haben in einen Unterordner
+namens "Existing". Wenn diese Option nicht gesetzt ist, werden die gleichnamigen
+Songs gelöscht.
+
+=item B<--use-tags>
+
+Für die Erstellung des Dateinamens werden die ID3-Tags des Songs verwedet, wenn vorhanden.
+
+=item B<--debug>
+
+Es werden Informationen über die verwendeten regulären Ausdrücke ausgegeben.
+
+=item B<--archive-dir dir>
+
+Hiermit kann der Pfad zum Musikarchiv angegeben werden. Es werden alle Songs die
+im Archiv schon vorhanden sind gelöscht.
+
+=item B<--dest-dir dir>
+
+Gibt das Verzeichnis an in welches die umbenannten Songs gespeichert werden sollen.
+
+=item B<--write-srcdir2tag>
+
+Die Unterordner des Quellverzeichnisses in denen die Songs liegen werden in dem ID3-Tag
+des jeweiligen Songs gespeichert. Damit kann auch nach dem Verschieben der Songs noch festgestellt
+werde in wlehcem Verzeichnis sich der Song befand.
+
+=item B<--use-src-dir-as-archiv>
+
+Songs die sich im Quellverzeichnisses befinden und einen ähnlichen Dateinamen haben,
+werden gelöscht/aussortiert. Dabei werden die Unterordner des jeweiligen Songs ignoriert.
+So können doppelte Songs, welche sich in unterschiedlichen Unterordnern befinden, gefunden werden.
+
+=back
+
+=cut

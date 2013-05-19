@@ -1,0 +1,2 @@
+#!/bin/sh
+perl TrackNamer "/home/timo/Musik/Radio" --archive-dir "/home/timo/Musik/Alle" --use-tags

@@ -1,0 +1,2 @@
+Die folgenden Packete müssen installiert sein:
+sudo apt-get install libmp3-tag-perl libmp3-info-perl libgstreamer-interfaces-perl libgtk2-perl libtext-levenshtein-perl libterm-readkey-perl libterm-readline-gnu-perl ffmpeg gstreamer0.10-fluendo-mp3

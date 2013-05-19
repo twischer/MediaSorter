@@ -1,0 +1,3 @@
+#!/bin/sh
+perl TrackNamer "/home/timo/Musik/Neu" --archive-dir "/home/timo/Musik/Alle" --rename-by-user
+perl GainID3Tag.pl "/home/timo/Musik/Neu"

@@ -1,0 +1,128 @@
+#!/usr/bin/perl -w
+use strict;
+use warnings;
+use utf8;
+use File::Copy();
+use File::Basename();
+
+chdir( File::Basename::dirname($0) );
+require MediaSorter;
+
+
+my $MUSIC_PATH = "/home/timo/Musik/Gut";
+my $DEST_PATH = "/home/timo/Musik/MP3-Player";
+my $HISTORY_FILE = "./history.dat";
+
+print "COPY RANDOM MUSIC PLAYER\n\n";
+
+print "Läd Verzeichnis $MUSIC_PATH'\n";
+my @aszMusicFiles = MediaSorter::FindFiles( $MUSIC_PATH );
+
+unless (-d $DEST_PATH)
+{
+	mkdir($DEST_PATH);
+}
+
+my %anPlayedTracks = MediaSorter::HistoryLoad($HISTORY_FILE);
+
+my $bWorkingDir = 1;
+while ($bWorkingDir)
+{
+	my $szRandomFile = GetRadomFile();
+	MediaSorter::PlayerLoad( $szRandomFile );
+    MediaSorter::PlayerForward();
+    MediaSorter::PlayerForward();
+	
+	my ($nFileCount, $nPlayedCount) = GetLength();
+	print "\n\n($nPlayedCount / $nFileCount) $szRandomFile\n";
+	
+	print "m => Nächstes Lied\n";
+	print "y => Lied speichern\n";
+	print ", => Zurückspulen\n";
+	print ". => Vorspulen\n";
+	print "q => Beenden\n\n";
+	
+	my $bWorkingFile = 1;
+	while ($bWorkingFile)
+	{
+		my $szInput = MediaSorter::GetKey();
+		
+		if ($szInput eq "q")
+		{
+			$bWorkingFile = 0;
+			$bWorkingDir = 0;
+		}
+		elsif ($szInput eq "m")
+		{
+			$bWorkingFile = 0;
+		}
+		elsif ($szInput eq "y")
+		{
+			File::Copy::copy( $szRandomFile, $DEST_PATH."/".File::Basename::basename($szRandomFile) ) or warn "WARN: Lied nicht gespeichert.\n";
+			print "Lied gespeichert.\n";
+			$bWorkingFile = 0;
+		}
+		elsif ($szInput eq ",")
+		{
+			MediaSorter::PlayerRewind();
+		}
+		elsif ($szInput eq ".")
+		{
+			MediaSorter::PlayerForward();
+		}
+	}
+	MediaSorter::PlayerUnload();
+}
+
+MediaSorter::HistorySave($HISTORY_FILE, \%anPlayedTracks);
+
+print "Beendet.\n";
+exit;
+
+
+sub GetRadomFile
+{
+	my $szRadomFile = "";
+
+	my ($nFileCount, $nPlayedCount) = GetLength();
+	if ($nFileCount <= $nPlayedCount)
+	{
+		print "Alle Lieder wurden einmal durchgehört.\n";
+		%anPlayedTracks = ();
+	}
+	
+	my $bFileNotFound = 1;
+	while ($bFileNotFound)
+	{
+		my $nRandNr = int(  rand( scalar @aszMusicFiles - 1 )  );
+		my $szFile = $aszMusicFiles[$nRandNr];
+		
+		unless ( exists $anPlayedTracks{$szFile} )
+		{
+			$anPlayedTracks{$szFile} = 1;
+			$szRadomFile = $szFile;
+			$bFileNotFound = 0;
+		}
+	}
+	
+	return $szRadomFile;
+}
+
+sub GetLength
+{
+	my $nLength = scalar @aszMusicFiles;
+	my $nLength2 = scalar keys %anPlayedTracks;
+
+	return ($nLength, $nLength2);
+}
+
+
+
+
+
+
+
+
+
+
+
